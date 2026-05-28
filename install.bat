@@ -7,6 +7,9 @@ echo ========================================
 echo.
 
 echo [1/3] 创建虚拟环境...
+if exist ".venv" (
+    rmdir /s /q ".venv"
+)
 python -m venv .venv
 if %errorlevel% neq 0 (
     echo 虚拟环境创建失败，请检查 Python 是否已安装
