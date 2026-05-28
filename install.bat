@@ -28,9 +28,14 @@ echo 依赖安装完成！
 echo.
 echo [3/3] 安装 Playwright 浏览器（约180MB，请耐心等待）...
 set PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/
-call .\.venv\Scripts\playwright install chromium
+call .\.venv\Scripts\python.exe -m playwright install --force chromium
 if %errorlevel% neq 0 (
-    echo Playwright 浏览器安装失败，Bot 仍可启动但爬虫功能不可用
+    echo ========================================
+    echo Playwright 浏览器安装失败
+    echo 请手动执行: .\.venv\Scripts\python.exe -m playwright install --force chromium
+    echo ========================================
+    pause
+    exit /b 1
 )
 
 echo.
