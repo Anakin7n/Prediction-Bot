@@ -48,7 +48,7 @@ class BotHandler:
     def _handle_date(self, user_id, chat_id, session, text: str):
         date_str = _parse_date(text)
         if not date_str:
-            self._sender.send_text(chat_id, cards.invalid_format("请按格式输入日期，如 `6.15` 或 `6/15`"))
+            self._sender.send_text(chat_id, cards.invalid_format("请按格式输入日期，如 6.15 或 6/15"))
             return
 
         session["date"] = date_str
@@ -61,14 +61,24 @@ class BotHandler:
             self._sender.send_text(
                 chat_id,
                 cards.invalid_format(
-                    "格式错误，请按格式输入：\n`影片名:占比, 影片名:占比`\n"
+                    "格式错误，请按格式输入：\n片名:占比, 片名:占比\n"
                     "支持 17.6%、0.176、5.6 等格式，中英文符号均可"
                 ),
             )
             return
 
         session["movies_user"] = parsed
-        movie_names = list(parsed.keys())
+        session["state"] = State.AWAITING_DAPAN
+        self._sender.send_text(chat_id, cards.ask_dapan(session["date"]))
+
+    def _handle_dapan(self, user_id, chat_id, session, text: str):
+        dapan = _parse_number(text)
+        if dapan is None:
+            self._sender.send_text(chat_id, cards.invalid_format("请输入有效数字，如 420000"))
+            return
+
+        session["dapan_total"] = dapan
+        movie_names = list(session["movies_user"].keys())
         date_str = session["date"]
 
         try:
@@ -78,41 +88,22 @@ class BotHandler:
             return
 
         matched_with_share = []
-        unmatched_names = []
         for i, m in enumerate(matched):
             user_name = movie_names[i]
-            m["cumulative_share"] = parsed.get(user_name, 0)
+            m["cumulative_share"] = session["movies_user"].get(user_name, 0)
             matched_with_share.append(m)
-            if m["show_count"] == 0:
-                unmatched_names.append(user_name)
-
-        session["matched_movies"] = matched_with_share
-        session["total_show_count"] = total_show_count
-        session["state"] = State.AWAITING_DAPAN
-
-        self._sender.send_text(
-            chat_id,
-            cards.ask_dapan(session["date"], matched_with_share, unmatched_names, total_show_count),
-        )
-
-    def _handle_dapan(self, user_id, chat_id, session, text: str):
-        dapan = _parse_number(text)
-        if dapan is None:
-            self._sender.send_text(chat_id, cards.invalid_format("请输入有效数字，如 `420000`"))
-            return
-
-        session["dapan_total"] = dapan
 
         excel_bytes = generate_excel(
-            date_str=session["date"],
-            movies=session["matched_movies"],
+            date_str=date_str,
+            movies=matched_with_share,
             dapan_total=dapan,
-            total_show_count=session["total_show_count"],
+            total_show_count=total_show_count,
         )
 
-        movie_count = len(session["matched_movies"])
-        self._sender.send_text(chat_id, cards.result(session["date"], movie_count, dapan))
+        movie_count = len(matched_with_share)
+        self._sender.send_text(chat_id, cards.result(date_str, movie_count, dapan))
         self._sender.send_file(chat_id, excel_bytes, "影片落位预测.xlsx")
+        self._sender.send_text(chat_id, cards.summary(date_str, matched_with_share))
 
         del self._sessions[user_id]
 
