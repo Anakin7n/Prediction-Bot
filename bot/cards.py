@@ -39,11 +39,15 @@ def result(date_str: str, movie_count: int, dapan: int):
     )
 
 
-def summary(date_str: str, movies: list[dict]):
+def summary(date_str: str, movies: list[dict], dapan_total: int, total_show_count: int):
     weekday = _day_of_week(date_str)
     lines = [f"{weekday}落位："]
+    remaining = dapan_total - total_show_count
     for m in movies:
-        pct = m.get("cumulative_share", 0) * 100
+        cum_share = m.get("cumulative_share", 0)
+        show_count = m.get("show_count", 0)
+        final_show = remaining * cum_share + show_count
+        pct = final_show / dapan_total * 100 if dapan_total else 0
         s = f"{pct:.1f}"
         if s.endswith(".0"):
             s = s[:-2]

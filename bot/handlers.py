@@ -103,7 +103,7 @@ class BotHandler:
         movie_count = len(matched_with_share)
         self._sender.send_text(chat_id, cards.result(date_str, movie_count, dapan))
         self._sender.send_file(chat_id, excel_bytes, "影片落位预测.xlsx")
-        self._sender.send_text(chat_id, cards.summary(date_str, matched_with_share))
+        self._sender.send_text(chat_id, cards.summary(date_str, matched_with_share, dapan, total_show_count))
 
         del self._sessions[user_id]
 
