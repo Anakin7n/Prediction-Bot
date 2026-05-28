@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 cd /d "%~dp0"
 echo ========================================
 echo   Prediction Bot - 一键安装
@@ -16,7 +17,7 @@ echo 虚拟环境创建完成！
 
 echo.
 echo [2/3] 安装 Python 依赖...
-call .\.venv\Scripts\pip install -r requirements.txt -q
+call .\.venv\Scripts\pip install -r requirements.txt -q -i https://mirrors.aliyun.com/pypi/simple/
 if %errorlevel% neq 0 (
     echo 依赖安装失败
     pause
