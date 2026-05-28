@@ -2,7 +2,6 @@
 
 import asyncio
 import concurrent.futures
-import hashlib
 import inspect
 import json
 import logging
@@ -124,8 +123,6 @@ class MessageSender:
 
 _seen_cache: set[str] | None = None
 _seen_lock = threading.RLock()
-_content_seen: dict[str, float] = {}
-_CONTENT_TTL = 600
 
 
 def _init_seen():
@@ -173,11 +170,6 @@ def _is_duplicate(msg_id: str) -> bool:
 
 
 def _is_content_duplicate(content_str: str) -> bool:
-    now = time.time()
-    h = hashlib.sha256(content_str.encode()).hexdigest()
-    if h in _content_seen and now - _content_seen[h] < _CONTENT_TTL:
-        return True
-    _content_seen[h] = now
     return False
 
 

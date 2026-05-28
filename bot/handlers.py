@@ -78,32 +78,28 @@ class BotHandler:
             return
 
         session["dapan_total"] = dapan
-        movie_names = list(session["movies_user"].keys())
         date_str = session["date"]
 
         try:
-            matched, total_show_count = self._maoyan.fetch_by_date(movie_names, date_str)
+            matched, total_show_count = self._maoyan.fetch_by_date(list(session["movies_user"].keys()), date_str)
         except Exception as e:
             self._sender.send_text(chat_id, cards.error(f"猫眼数据获取失败: {e}"))
             return
 
-        matched_with_share = []
-        for i, m in enumerate(matched):
-            user_name = movie_names[i]
-            m["cumulative_share"] = session["movies_user"].get(user_name, 0)
-            matched_with_share.append(m)
+        for m in matched:
+            m["cumulative_share"] = session["movies_user"].get(m["name"], 0)
 
         excel_bytes = generate_excel(
             date_str=date_str,
-            movies=matched_with_share,
+            movies=matched,
             dapan_total=dapan,
             total_show_count=total_show_count,
         )
 
-        movie_count = len(matched_with_share)
+        movie_count = len(matched)
         self._sender.send_text(chat_id, cards.result(date_str, movie_count, dapan))
         self._sender.send_file(chat_id, excel_bytes, "影片落位预测.xlsx")
-        self._sender.send_text(chat_id, cards.summary(date_str, matched_with_share, dapan, total_show_count))
+        self._sender.send_text(chat_id, cards.summary(date_str, matched, dapan, total_show_count))
 
         del self._sessions[user_id]
 
@@ -128,7 +124,7 @@ def _parse_movies(text: str) -> dict[str, float] | None:
         part = part.strip()
         if not part:
             continue
-        m = re.match(r"^(.+?)[:：=\-＞→\s]+(.+)$", part)
+        m = re.match(r"^(.+)[:：=\-＞→\s]+(.+)$", part)
         if not m:
             return None
         name = m.group(1).strip()

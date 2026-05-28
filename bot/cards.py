@@ -48,6 +48,7 @@ def summary(date_str: str, movies: list[dict], dapan_total: int, total_show_coun
         show_count = m.get("show_count", 0)
         final_show = remaining * cum_share + show_count
         pct = final_show / dapan_total * 100 if dapan_total else 0
+        pct = int(pct * 10) / 10
         s = f"{pct:.1f}"
         if s.endswith(".0"):
             s = s[:-2]

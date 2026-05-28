@@ -114,7 +114,7 @@ def _write_data(ws, date_str, movies, dapan_total, total_show_count):
         cell_i.number_format = num_fmt
         cell_i.border = THIN_BORDER
 
-        cell_j = ws.cell(row=row, column=10, value=f"=I{row}/D{row}")                          # J: 落位占比
+        cell_j = ws.cell(row=row, column=10, value=f"=ROUNDDOWN(I{row}/D{row},3)")                          # J: 落位占比
         cell_j.number_format = pct_fmt
         cell_j.border = THIN_BORDER
 
