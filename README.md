@@ -95,7 +95,7 @@ Prediction-Bot/
 |------|------|------|
 | 连接方式 | WebSocket 长连接 | 无需公网 IP，启动 < 1 秒 |
 | 依赖 | `websockets` + `requests` + `playwright` + `openpyxl` + `python-dotenv` | 不依赖 lark-oapi SDK，极简 |
-| 消息去重 | message_id 持久化 + 内容哈希 | 防 WS 重推 / 重启回放 |
+| 消息去重 | message_id 持久化 | 防 WS 重推 / 重启回放 |
 | Protobuf | 自写轻量编解码 | 仅需 ping 帧，无需引入大库 |
 | Excel 生成 | openpyxl 写原生公式 | 用户打开后可独立重算 |
 
