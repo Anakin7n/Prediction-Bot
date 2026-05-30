@@ -6,7 +6,7 @@ from datetime import date as dt_date
 def _day_of_week(date_str: str) -> str:
     parts = date_str.split(".")
     month, day = int(parts[0]), int(parts[1])
-    d = dt_date(2026, month, day)
+    d = dt_date(dt_date.today().year, month, day)
     names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     return names[d.weekday()]
 

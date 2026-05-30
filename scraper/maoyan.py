@@ -1,4 +1,6 @@
 import re
+from datetime import date as dt_date
+
 import requests
 from config import MAOYAN_DASHBOARD_URL
 
@@ -69,9 +71,9 @@ class MaoyanClient:
             # Process known movies via direct detail page
             for uname, mid in known:
                 page = browser.new_page(viewport={"width": 375, "height": 812})
-                sc = _scrape_detail(page, mid, api_date)
+                sc, page_total = _scrape_detail(page, mid, api_date)
                 if total_show_count == 0:
-                    total_show_count = _get_total_from_page(page, mid, api_date)
+                    total_show_count = page_total
                 page.close()
                 results.append({"name": uname, "show_count": sc, "box_rate": "N/A", "movie_id": mid})
 
@@ -128,30 +130,23 @@ class MaoyanClient:
         return results, total_show_count
 
 
-def _scrape_detail(page, movie_id: int, api_date: str) -> int:
+def _scrape_detail(page, movie_id: int, api_date: str) -> tuple[int, int]:
     url = f"https://piaofang.maoyan.com/i/dashboard/movie?movieId={movie_id}&date={api_date}"
     page.goto(url, wait_until="networkidle", timeout=30000)
     page.wait_for_timeout(5000)
     text = page.inner_text("body")
     m = re.search(r'当日排片场次\s*\n\s*([\d,]+)', text)
-    if m:
-        return int(m.group(1).replace(",", ""))
-    return 0
-
-
-def _get_total_from_page(page, movie_id: int, api_date: str) -> int:
-    text = page.inner_text("body")
-    m = re.search(r'总场次[：:]\s*([\d.]+)万', text)
-    if m:
-        return int(float(m.group(1)) * 10000)
-    return 0
+    sc = int(m.group(1).replace(",", "")) if m else 0
+    tm = re.search(r'总场次[：:]\s*([\d.]+)万', text)
+    total = int(float(tm.group(1)) * 10000) if tm else 0
+    return sc, total
 
 
 def _to_api_date(date_str: str) -> str:
     parts = date_str.strip().split(".")
     month = int(parts[0])
     day = int(parts[1])
-    return f"2026-{month:02d}-{day:02d}"
+    return f"{dt_date.today().year}-{month:02d}-{day:02d}"
 
 
 def _parse_show_count_desc(desc: str) -> int:

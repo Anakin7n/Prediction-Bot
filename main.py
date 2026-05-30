@@ -5,6 +5,7 @@ import concurrent.futures
 import inspect
 import json
 import logging
+import logging.handlers
 import os
 import re
 import sys
@@ -32,7 +33,12 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
-        logging.FileHandler(Path(__file__).parent / "bot.log", encoding="utf-8"),
+        logging.handlers.RotatingFileHandler(
+            Path(__file__).parent / "bot.log",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        ),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -169,10 +175,6 @@ def _is_duplicate(msg_id: str) -> bool:
         return False
 
 
-def _is_content_duplicate(content_str: str) -> bool:
-    return False
-
-
 def _pb_write_varint(buf: bytearray, n: int):
     while n > 127:
         buf.append((n & 0x7F) | 0x80)
@@ -217,62 +219,46 @@ def encode_ping_frame(service_id: int) -> bytes:
     return bytes(buf)
 
 
-def decode_frame(data: bytes) -> dict:
+def _parse_ws_frame(data: bytes) -> dict:
+    """解析飞书 WS 二进制帧，仅提取 field 4(帧类型) 和 field 8(payload)。"""
     result = {}
     pos = 0
     while pos < len(data):
-        if pos >= len(data):
-            break
         tag = data[pos]
         pos += 1
         field = tag >> 3
         wire = tag & 0x07
-        if wire == 0:
+        if wire == 0:                     # varint
             value = 0
             shift = 0
             while pos < len(data):
                 b = data[pos]
                 pos += 1
                 value |= (b & 0x7F) << shift
-                shift += 7
                 if not (b & 0x80):
                     break
-            result[field] = value
-        elif wire == 2:
+                shift += 7
+            if field == 4:
+                result[field] = value
+        elif wire == 2:                   # length-delimited
             length = 0
             shift = 0
             while pos < len(data):
                 b = data[pos]
                 pos += 1
                 length |= (b & 0x7F) << shift
-                shift += 7
                 if not (b & 0x80):
                     break
-            value = data[pos:pos + length]
+                shift += 7
+            if field == 8:
+                result[field] = data[pos:pos + length]
             pos += length
-            if field == 5:
-                headers = []
-                hpos = 0
-                while hpos < len(value):
-                    htag = value[hpos]
-                    hpos += 1
-                    hfield = htag >> 3
-                    hwire = htag & 0x07
-                    if hwire == 2:
-                        hlen = 0
-                        hshift = 0
-                        while hpos < len(value):
-                            hb = value[hpos]
-                            hpos += 1
-                            hlen |= (hb & 0x7F) << hshift
-                            hshift += 7
-                            if not (hb & 0x80):
-                                break
-                        headers.append((hfield, value[hpos:hpos + hlen].decode("utf-8")))
-                        hpos += hlen
-                result[field] = headers
-            else:
-                result[field] = value
+        elif wire == 1:                   # fixed64 — skip
+            pos += 8
+        elif wire == 5:                   # fixed32 — skip
+            pos += 4
+        else:
+            break
     return result
 
 
@@ -362,10 +348,6 @@ class FeishuWsClient:
             text = re.sub(r'@\S+\s*', '', text).strip()
             logging.info(f"[文本] {text}")
 
-            if text.strip().lower() != "/start" and _is_content_duplicate(content_str):
-                logging.info("[跳过] 内容重复")
-                return
-
             user_id = sender_info.get("sender_id", {}).get("open_id", "")
             self._handler.handle_message(user_id, chat_id, text)
 
@@ -383,7 +365,7 @@ class FeishuWsClient:
                 raw = await self._ws.recv()
                 if isinstance(raw, str):
                     continue
-                frame = decode_frame(raw)
+                frame = _parse_ws_frame(raw)
                 ft = frame.get(4, -1)
                 if ft == 0:
                     continue

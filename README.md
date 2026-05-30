@@ -10,13 +10,17 @@ WebSocket 长连接模式，无需公网 IP，不依赖飞书官方 SDK。
 Prediction-Bot/
 ├── main.py                  # Bot 入口 (WS 客户端 + 事件分发 + 消息发送)
 ├── config.py                # 配置 (.env 读取)
-├── requirements.txt         # 5 个依赖
+├── requirements.txt         # 6 个依赖
 ├── install.bat              # 一键安装 (创建 venv + pip install + playwright 浏览器)
 ├── start.bat                # 启动 (Windows Terminal)
 ├── start.ps1                # 启动脚本 (自动识别 venv / 系统 Python)
 ├── start.vbs                # 后台静默启动
 ├── .env.example             # 飞书凭证模板
 ├── .gitignore
+├── tests/
+│   ├── test_parsers.py       # 解析函数单元测试
+│   ├── test_protobuf.py      # Protobuf 编解码测试
+│   └── test_excel.py         # Excel 公式生成测试
 ├── scraper/
 │   └── maoyan.py            # 猫眼数据 (requests API + Playwright 浏览器)
 ├── bot/
@@ -96,13 +100,20 @@ Prediction-Bot/
 | 连接方式 | WebSocket 长连接 | 无需公网 IP，启动 < 1 秒 |
 | 依赖 | `websockets` + `requests` + `playwright` + `openpyxl` + `python-dotenv` | 不依赖 lark-oapi SDK，极简 |
 | 消息去重 | message_id 持久化 | 防 WS 重推 / 重启回放 |
-| Protobuf | 自写轻量编解码 | 仅需 ping 帧，无需引入大库 |
+| Protobuf | 专用二进制帧编解码 | 仅解析 frame type 和 payload，不引入大库 |
 | Excel 生成 | openpyxl 写原生公式 | 用户打开后可独立重算 |
+
+## 运行测试
+
+```bash
+pytest tests/
+```
 
 ## 注意事项
 
+- 日期年份默认使用当前年份，无需输入（如 `6.15` 会解析为今年的 6 月 15 日）
 - 影片名称需与猫眼榜单**精确匹配**，否则场次填 0
 - 累计新增占比支持百分比自动转换（输入 `17.6` 自动变为 `0.176`）
 - 大盘场次支持 `42万` / `42.5万` 等中文数字格式
 - 密钥走 `.env`，不硬编码，不提交 git
-- 日志输出到 `bot.log`，不自动清理
+- 日志自动轮转（单文件 5MB，保留 3 个备份）
