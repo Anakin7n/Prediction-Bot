@@ -68,14 +68,15 @@ class MaoyanClient:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
 
-            # Process known movies via direct detail page
-            for uname, mid in known:
+            # Process known movies via direct detail page (reuse single page)
+            if known:
                 page = browser.new_page(viewport={"width": 375, "height": 812})
-                sc, page_total = _scrape_detail(page, mid, api_date)
-                if total_show_count == 0:
-                    total_show_count = page_total
+                for uname, mid in known:
+                    sc, page_total = _scrape_detail(page, mid, api_date)
+                    if total_show_count == 0:
+                        total_show_count = page_total
+                    results.append({"name": uname, "show_count": sc, "box_rate": "N/A", "movie_id": mid})
                 page.close()
-                results.append({"name": uname, "show_count": sc, "box_rate": "N/A", "movie_id": mid})
 
             # Process unknown movies by clicking through the sidebar
             if unknown and known:
@@ -89,9 +90,9 @@ class MaoyanClient:
                 page = browser.new_page(viewport={"width": 375, "height": 812})
                 page.goto(
                     f"https://piaofang.maoyan.com/i/dashboard/movie?movieId={first_id}&date={api_date_no_dash}",
-                    wait_until="networkidle", timeout=30000,
+                    wait_until="domcontentloaded", timeout=15000,
                 )
-                page.wait_for_timeout(5000)
+                page.wait_for_timeout(2000)
 
                 for uname in unknown:
                     sc = 0
@@ -99,7 +100,7 @@ class MaoyanClient:
                     try:
                         el = page.locator(f"text={uname}").first
                         el.click(timeout=5000)
-                        page.wait_for_timeout(4000)
+                        page.wait_for_timeout(2000)
 
                         url = page.url
                         mid = re.search(r'movieId=(\d+)', url)
@@ -117,7 +118,7 @@ class MaoyanClient:
                                 total_show_count = int(float(tm.group(1)) * 10000)
 
                         page.go_back()
-                        page.wait_for_timeout(2000)
+                        page.wait_for_timeout(1000)
                     except Exception:
                         pass
 
@@ -132,8 +133,11 @@ class MaoyanClient:
 
 def _scrape_detail(page, movie_id: int, api_date: str) -> tuple[int, int]:
     url = f"https://piaofang.maoyan.com/i/dashboard/movie?movieId={movie_id}&date={api_date}"
-    page.goto(url, wait_until="networkidle", timeout=30000)
-    page.wait_for_timeout(5000)
+    page.goto(url, wait_until="domcontentloaded", timeout=15000)
+    try:
+        page.wait_for_selector("text=当日排片场次", timeout=8000)
+    except Exception:
+        pass
     text = page.inner_text("body")
     m = re.search(r'当日排片场次\s*\n\s*([\d,]+)', text)
     sc = int(m.group(1).replace(",", "")) if m else 0

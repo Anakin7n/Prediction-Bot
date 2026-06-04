@@ -29,6 +29,10 @@ def ask_dapan(date_str: str):
     return f"请输入 {date_str} 的大盘场次(D)（如 420000）"
 
 
+def querying():
+    return "🔍 收到，正在查询猫眼排片数据，请稍候..."
+
+
 def result(date_str: str, movie_count: int, dapan: int):
     return (
         f"✅ 预测 Excel 已生成\n\n"

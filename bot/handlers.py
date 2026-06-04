@@ -80,6 +80,8 @@ class BotHandler:
         session["dapan_total"] = dapan
         date_str = session["date"]
 
+        self._sender.send_text(chat_id, cards.querying())
+
         try:
             matched, total_show_count = self._maoyan.fetch_by_date(list(session["movies_user"].keys()), date_str)
         except Exception as e:
