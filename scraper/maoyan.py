@@ -90,7 +90,7 @@ class MaoyanClient:
                 page = browser.new_page(viewport={"width": 375, "height": 812})
                 page.goto(
                     f"https://piaofang.maoyan.com/i/dashboard/movie?movieId={first_id}&date={api_date_no_dash}",
-                    wait_until="domcontentloaded", timeout=15000,
+                    wait_until="networkidle", timeout=15000,
                 )
                 page.wait_for_timeout(2000)
 
@@ -113,9 +113,10 @@ class MaoyanClient:
                             sc = int(m.group(1).replace(",", ""))
 
                         if total_show_count == 0:
-                            tm = re.search(r'总场次[：:]\s*([\d.]+)万', text)
+                            tm = re.search(r'总场次[：:]\s*([\d,.]+)\s*(万|场)?', text)
                             if tm:
-                                total_show_count = int(float(tm.group(1)) * 10000)
+                                num = float(tm.group(1).replace(',', ''))
+                                total_show_count = int(num * 10000) if tm.group(2) == '万' else int(num)
 
                         page.go_back()
                         page.wait_for_timeout(1000)
@@ -133,16 +134,17 @@ class MaoyanClient:
 
 def _scrape_detail(page, movie_id: int, api_date: str) -> tuple[int, int]:
     url = f"https://piaofang.maoyan.com/i/dashboard/movie?movieId={movie_id}&date={api_date}"
-    page.goto(url, wait_until="domcontentloaded", timeout=15000)
-    try:
-        page.wait_for_selector("text=当日排片场次", timeout=8000)
-    except Exception:
-        pass
+    page.goto(url, wait_until="networkidle", timeout=15000)
+    page.wait_for_timeout(2000)
     text = page.inner_text("body")
     m = re.search(r'当日排片场次\s*\n\s*([\d,]+)', text)
     sc = int(m.group(1).replace(",", "")) if m else 0
-    tm = re.search(r'总场次[：:]\s*([\d.]+)万', text)
-    total = int(float(tm.group(1)) * 10000) if tm else 0
+    tm = re.search(r'总场次[：:]\s*([\d,.]+)\s*(万|场)?', text)
+    if tm:
+        num = float(tm.group(1).replace(',', ''))
+        total = int(num * 10000) if tm.group(2) == '万' else int(num)
+    else:
+        total = 0
     return sc, total
 
 
