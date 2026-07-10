@@ -298,7 +298,13 @@ class FeishuWsClient:
                     ping = encode_ping_frame(sid)
                     await self._ws.send(ping)
             except Exception as e:
-                logging.warning(f"ping失败: {e}")
+                logging.warning(f"ping失败，关闭连接触发重连: {e}")
+                if self._ws is not None:
+                    try:
+                        await self._ws.close()
+                    except Exception:
+                        pass
+                break
             await asyncio.sleep(self._ping_interval)
 
     def _dispatch_sync(self, event_data: dict):
@@ -381,6 +387,7 @@ class FeishuWsClient:
             except Exception as e:
                 logging.error(f"读取异常: {e}")
                 traceback.print_exc()
+                break
 
     async def _try_connect(self):
         url = self._get_ws_url()
@@ -404,7 +411,10 @@ class FeishuWsClient:
             except Exception as e:
                 logging.error(f"连接失败: {e}")
             if self._ws is not None:
-                await self._ws.close()
+                try:
+                    await self._ws.close()
+                except Exception as e:
+                    logging.warning(f"关闭连接异常: {e}")
                 self._ws = None
             if self._ping_task is not None:
                 self._ping_task.cancel()
