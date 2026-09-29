@@ -1,184 +1,262 @@
+"""Read MaoYan show counts from its current dashboard response."""
+
+import json
 import logging
 import re
 from datetime import date as dt_date
+from functools import lru_cache
+from pathlib import Path
 
 import requests
-from config import MAOYAN_DASHBOARD_URL
 
 logger = logging.getLogger(__name__)
 
+_DASHBOARD = "https://piaofang.maoyan.com/i/dashboard/movie"
+_SESSION = "https://piaofang.maoyan.com/session"
+
 
 class MaoyanClient:
-    def __init__(self):
-        self._headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/125.0.0.0 Safari/537.36"
-            ),
-            "Accept": "application/json",
-            "Referer": "https://piaofang.maoyan.com/dashboard",
-        }
-
-    def _fetch_raw(self) -> dict:
-        try:
-            r = requests.get(MAOYAN_DASHBOARD_URL, headers=self._headers, timeout=15)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            raise RuntimeError(f"猫眼 API 请求失败: {e}")
-
-    def fetch_movies(self) -> list[dict]:
-        data = self._fetch_raw()
-        movies_raw = data.get("movieList", {}).get("data", {}).get("list", [])
-        result = []
-        for m in movies_raw:
-            info = m.get("movieInfo", {})
-            result.append({
-                "name": info.get("movieName", ""),
-                "show_count": m.get("showCount", 0),
-                "box_rate": m.get("boxRate", "0%"),
-                "movie_id": info.get("movieId", 0),
-            })
-        return result
-
-    def get_total_show_count(self) -> int:
-        data = self._fetch_raw()
-        desc = data.get("movieList", {}).get("data", {}).get("nationBoxInfo", {}).get("showCountDesc", "")
-        return _parse_show_count_desc(desc)
-
     def fetch_by_date(self, user_names: list[str], date_str: str) -> tuple[list[dict], int]:
         from playwright.sync_api import sync_playwright
 
-        all_movies = self.fetch_movies()
-        name_to_id = {m["name"]: m["movie_id"] for m in all_movies}
-
-        api_date = _to_api_date(date_str)
-        api_date_no_dash = api_date.replace("-", "")
-        results = []
-        total_show_count = 0
-        known = []
-        unknown = []
-
-        logger.info("今日大盘共 %d 部电影，用户输入 %d 部", len(all_movies), len(user_names))
-        for uname in user_names:
-            uname = uname.strip()
-            mid = name_to_id.get(uname)
-            if mid:
-                known.append((uname, mid))
-                logger.info("  [匹配] \"%s\" -> movieId=%s", uname, mid)
-            else:
-                unknown.append(uname)
-                logger.warning("  [未匹配] \"%s\" 不在今日大盘列表中，将尝试侧边栏查找", uname)
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-
-            # Process known movies via direct detail page (reuse single page)
-            if known:
-                page = browser.new_page(viewport={"width": 375, "height": 812})
-                for uname, mid in known:
-                    sc, page_total = _scrape_detail(page, mid, api_date)
-                    if total_show_count == 0:
-                        total_show_count = page_total
-                    results.append({"name": uname, "show_count": sc, "box_rate": "N/A", "movie_id": mid})
-                    logger.info("  [详情页] \"%s\" show_count=%s, total=%s", uname, sc, page_total)
-                page.close()
-
-            # Process unknown movies by clicking through the sidebar
-            if unknown and known:
-                first_id = known[0][1]
-            elif unknown:
-                first_id = all_movies[0]["movie_id"] if all_movies else 0
-            else:
-                first_id = 0
-
-            if unknown and first_id:
-                first_url = f"https://piaofang.maoyan.com/i/dashboard/movie?movieId={first_id}&date={api_date_no_dash}"
-                page = browser.new_page(viewport={"width": 375, "height": 812})
-                page.goto(first_url, wait_until="networkidle", timeout=15000)
-                page.wait_for_timeout(2000)
-
-                for uname in unknown:
-                    sc = 0
-                    movie_id = 0
-                    logger.info("  [侧边栏] 尝试查找 \"%s\"...", uname)
-                    try:
-                        el = page.locator(f"text={uname}").first
-                        el.click(timeout=5000)
-                        page.wait_for_timeout(2000)
-                        logger.info("  [侧边栏] \"%s\" 点击成功，当前URL: %s", uname, page.url)
-
-                        url = page.url
-                        mid = re.search(r'movieId=(\d+)', url)
-                        if mid:
-                            movie_id = int(mid.group(1))
-                            logger.info("  [侧边栏] \"%s\" 提取到 movieId=%s", uname, movie_id)
-                        else:
-                            logger.warning("  [侧边栏] \"%s\" URL中未找到movieId: %s", uname, url)
-
-                        text = page.inner_text("body")
-                        m = re.search(r'当日排片场次\s*\n\s*([\d,]+)', text)
-                        if m:
-                            sc = int(m.group(1).replace(",", ""))
-                            logger.info("  [侧边栏] \"%s\" 场次=%s", uname, sc)
-                        else:
-                            logger.warning("  [侧边栏] \"%s\" 页面中未匹配到「当日排片场次」", uname)
-
-                        if total_show_count == 0:
-                            tm = re.search(r'总场次[：:]\s*([\d,.]+)\s*(万|场)?', text)
-                            if tm:
-                                num = float(tm.group(1).replace(',', ''))
-                                total_show_count = int(num * 10000) if tm.group(2) == '万' else int(num)
-
-                        # 重新加载侧边栏页面（不能用 go_back，SPA 不会重新渲染）
-                        page.goto(first_url, wait_until="networkidle", timeout=15000)
-                        page.wait_for_timeout(2000)
-                    except Exception as e:
-                        logger.warning("  [侧边栏] \"%s\" 失败: %s", uname, e)
-                        # 失败后也重新加载侧边栏页面
-                        try:
-                            page.goto(first_url, wait_until="networkidle", timeout=15000)
-                            page.wait_for_timeout(2000)
-                        except Exception:
-                            pass
-
-                    results.append({"name": uname, "show_count": sc, "box_rate": "N/A", "movie_id": movie_id})
-
-                page.close()
-
-            browser.close()
-
-        return results, total_show_count
+        requested_date = _to_api_date(date_str)
+        today = dt_date.today().isoformat()
+        with sync_playwright() as playwright:
+            browser = _launch_browser(playwright)
+            try:
+                today_page, today_data = _read_dashboard(browser, today)
+                session = _read_session()
+                known_digits = _learn_digits(today_data, session["movieRankList"])
+                templates = _render_digits(today_page, today_data, known_digits)
+                if requested_date == today:
+                    page, data = today_page, today_data
+                else:
+                    page, data = _read_dashboard(browser, requested_date)
+                digit_map = _match_digits(page, data, templates)
+                movies = data["movieList"]["list"]
+                by_name = {}
+                for movie in movies:
+                    name = movie["movieInfo"]["movieName"]
+                    if name in by_name:
+                        logger.warning(
+                            "猫眼 %s 有同名影片「%s」(movieId=%s、%s)，采用页面中排名靠前的影片",
+                            requested_date,
+                            name,
+                            by_name[name]["movieInfo"]["movieId"],
+                            movie["movieInfo"]["movieId"],
+                        )
+                    else:
+                        by_name[name] = movie
+                session_by_name = {
+                    m["movieName"]: m["count"] for m in session["movieRankList"]
+                }
+                results = []
+                for name in user_names:
+                    name = name.strip()
+                    movie = by_name.get(name)
+                    if movie is None:
+                        raise RuntimeError(
+                            f"影片「{name}」不在猫眼 {requested_date} 大盘影片列表中"
+                        )
+                    count = _decode_number(movie["showCount"], digit_map)
+                    if requested_date == today and name in session_by_name:
+                        count = session_by_name[name]
+                    results.append({
+                        "name": name,
+                        "show_count": count,
+                        "box_rate": "N/A",
+                        "movie_id": movie["movieInfo"]["movieId"],
+                    })
+                if requested_date == today:
+                    total = session["totalCount"]
+                else:
+                    desc = data["movieList"]["nationBoxInfo"]["showCountDesc"]
+                    total = _parse_show_count_desc(_decode_text(desc, digit_map))
+                if not results or total <= 0:
+                    raise RuntimeError("猫眼未返回有效的影片场次或大盘总场次")
+                logger.info("猫眼 %s：%d 部影片，总场次 %d", requested_date, len(movies), total)
+                return results, total
+            finally:
+                browser.close()
 
 
-def _scrape_detail(page, movie_id: int, api_date: str) -> tuple[int, int]:
-    url = f"https://piaofang.maoyan.com/i/dashboard/movie?movieId={movie_id}&date={api_date}"
-    page.goto(url, wait_until="networkidle", timeout=15000)
-    page.wait_for_timeout(2000)
-    text = page.inner_text("body")
-    m = re.search(r'当日排片场次\s*\n\s*([\d,]+)', text)
-    sc = int(m.group(1).replace(",", "")) if m else 0
-    if not m:
-        logger.warning("  [详情页] movieId=%s date=%s 未匹配到「当日排片场次」", movie_id, api_date)
-    tm = re.search(r'总场次[：:]\s*([\d,.]+)\s*(万|场)?', text)
-    if tm:
-        num = float(tm.group(1).replace(',', ''))
-        total = int(num * 10000) if tm.group(2) == '万' else int(num)
-    else:
-        total = 0
-    return sc, total
+def _read_session() -> dict:
+    try:
+        response = requests.get(_SESSION, timeout=20)
+        response.raise_for_status()
+        match = re.search(
+            r'"pageData":\s*(\{"movieRankList":\[.*?\],"totalCount":\d+\})',
+            response.text,
+        )
+        if match is None:
+            raise ValueError("缺少 pageData.movieRankList / totalCount")
+        data = json.loads(match.group(1))
+        if not data["movieRankList"] or data["totalCount"] <= 0:
+            raise ValueError("排片数据为空")
+        return data
+    except Exception as exc:
+        raise RuntimeError(f"猫眼今日排片页读取失败: {exc}") from exc
+
+
+def _launch_browser(playwright):
+    for options in ({}, {"channel": "chrome"}, {"channel": "msedge"}):
+        if not options and not Path(playwright.chromium.executable_path).exists():
+            continue
+        try:
+            return playwright.chromium.launch(headless=True, **options)
+        except Exception as exc:
+            logger.warning(
+                "启动浏览器 %s 失败: %s",
+                options or "Playwright Chromium",
+                str(exc).splitlines()[0],
+            )
+    raise RuntimeError("无法启动 Playwright Chromium、系统 Chrome 或 Edge")
+
+
+def _read_dashboard(browser, api_date: str):
+    page = browser.new_page(viewport={"width": 375, "height": 812})
+    url = f"{_DASHBOARD}?date={api_date}"
+    expected_date = api_date.replace("-", "")
+    try:
+        with page.expect_response(
+            lambda response: (
+                "/i/api/encrypt/dashboard-ajax/movie" in response.url
+                and (
+                    f"showDate={expected_date}" in response.url
+                    or (api_date == dt_date.today().isoformat()
+                        and "showDate=" not in response.url)
+                )
+                and response.status == 200
+            ),
+            timeout=30000,
+        ) as response_info:
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        data = response_info.value.json()
+        movies = data["movieList"]["list"]
+        if not movies:
+            raise ValueError("影片列表为空")
+        return page, data
+    except Exception as exc:
+        page.close()
+        raise RuntimeError(f"猫眼 {api_date} 大盘读取失败: {exc}") from exc
+
+
+def _glyphs(data: dict) -> list[str]:
+    return sorted({
+        char
+        for movie in data["movieList"]["list"]
+        for char in str(movie["showCount"])
+        if not char.isascii() or not char.isdigit()
+    })
+
+
+def _learn_digits(data: dict, session_movies: list[dict]) -> dict[str, str]:
+    glyphs = _glyphs(data)
+    if len(glyphs) != 10:
+        raise RuntimeError(f"猫眼数字字体格式变化：识别到 {len(glyphs)} 个字形")
+    votes = {glyph: [0] * 10 for glyph in glyphs}
+    counts = {movie["movieName"]: movie["count"] for movie in session_movies}
+    for movie in data["movieList"]["list"]:
+        name = movie["movieInfo"]["movieName"]
+        if name not in counts:
+            continue
+        raw, plain = str(movie["showCount"]), str(counts[name])
+        if len(raw) == len(plain):
+            for glyph, digit in zip(raw, plain):
+                if glyph in votes:
+                    votes[glyph][int(digit)] += 1
+
+    @lru_cache(None)
+    def assign(index: int, used: int):
+        if index == len(glyphs):
+            return 0, ()
+        best = (-1, ())
+        for digit in range(10):
+            if not used & (1 << digit):
+                score, tail = assign(index + 1, used | (1 << digit))
+                candidate = (score + votes[glyphs[index]][digit], (digit,) + tail)
+                if candidate[0] > best[0]:
+                    best = candidate
+        return best
+
+    _, digits = assign(0, 0)
+    mapping = {glyph: str(digit) for glyph, digit in zip(glyphs, digits)}
+    for glyph, digit in mapping.items():
+        agreement = votes[glyph][int(digit)]
+        opposition = max(votes[glyph][:int(digit)] + votes[glyph][int(digit) + 1:])
+        if agreement < 1 or agreement <= opposition:
+            raise RuntimeError("猫眼今日排片与大盘数字字体无法可靠对应")
+    return mapping
+
+
+def _render_digits(page, data: dict, mapping: dict[str, str]) -> dict[str, str]:
+    font_match = re.search(r'url\("?(//[^")]+\.woff)"?\)', data["fontStyle"])
+    if font_match is None:
+        raise RuntimeError("猫眼响应缺少数字字体文件")
+    font_url = "https:" + font_match.group(1)
+    bitmaps = page.evaluate(
+        """async ({chars, url}) => {
+            const face = new FontFace('codex-digit-font', `url("${url}")`);
+            await face.load();
+            document.fonts.add(face);
+            const result = {};
+            for (const ch of chars) {
+                const canvas = document.createElement('canvas');
+                canvas.width = 80; canvas.height = 90;
+                const ctx = canvas.getContext('2d');
+                ctx.font = '64px codex-digit-font';
+                ctx.fillText(ch, 8, 70);
+                const rgba = ctx.getImageData(0, 0, 80, 90).data;
+                let bits = '';
+                for (let i = 3; i < rgba.length; i += 4)
+                    bits += rgba[i] > 127 ? '1' : '0';
+                result[ch] = bits;
+            }
+            return result;
+        }""",
+        {"chars": list(mapping), "url": font_url},
+    )
+    return {mapping[char]: bitmap for char, bitmap in bitmaps.items()}
+
+
+def _match_digits(page, data: dict, templates: dict[str, str]) -> dict[str, str]:
+    glyphs = _glyphs(data)
+    bitmaps = _render_digits(page, data, {glyph: glyph for glyph in glyphs})
+    mapping = {}
+    for glyph, bitmap in bitmaps.items():
+        distances = sorted(
+            (sum(a != b for a, b in zip(bitmap, template)), digit)
+            for digit, template in templates.items()
+        )
+        if distances[0][0] > 250 or distances[1][0] - distances[0][0] < 50:
+            raise RuntimeError("猫眼数字字形无法可靠解码")
+        mapping[glyph] = distances[0][1]
+    if len(mapping) != 10 or len(set(mapping.values())) != 10:
+        raise RuntimeError("猫眼数字字体映射不完整")
+    return mapping
+
+
+def _decode_text(raw: str, mapping: dict[str, str]) -> str:
+    return "".join(mapping.get(char, char) for char in str(raw))
+
+
+def _decode_number(raw: str, mapping: dict[str, str]) -> int:
+    value = _decode_text(raw, mapping).replace(",", "")
+    if not value.isdigit():
+        raise RuntimeError(f"猫眼场次数字无法解码: {raw!r}")
+    return int(value)
 
 
 def _to_api_date(date_str: str) -> str:
     parts = date_str.strip().split(".")
     month = int(parts[0])
     day = int(parts[1])
-    return f"{dt_date.today().year}-{month:02d}-{day:02d}"
+    return dt_date(dt_date.today().year, month, day).isoformat()
 
 
 def _parse_show_count_desc(desc: str) -> int:
-    m = re.match(r"([\d.]+)万", desc)
-    if m:
-        return int(float(m.group(1)) * 10000)
-    return 0
+    match = re.fullmatch(r"([\d,.]+)\s*(万|场)?", desc.strip())
+    if match is None:
+        raise RuntimeError(f"猫眼总场次格式变化: {desc!r}")
+    value = float(match.group(1).replace(",", ""))
+    return int(value * 10000 if match.group(2) == "万" else value)
