@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+import time
 from datetime import date as dt_date
 from functools import lru_cache
 from pathlib import Path
@@ -15,18 +16,40 @@ _DASHBOARD = "https://piaofang.maoyan.com/i/dashboard/movie"
 _SESSION = "https://piaofang.maoyan.com/session"
 
 
+class _DigitMappingError(RuntimeError):
+    """The two today's snapshots do not establish a reliable mapping."""
+
+
 class MaoyanClient:
     def fetch_by_date(self, user_names: list[str], date_str: str) -> tuple[list[dict], int]:
-        from playwright.sync_api import sync_playwright
-
         requested_date = _to_api_date(date_str)
         today = dt_date.today().isoformat()
+        user_names = [name.strip() for name in user_names]
+        if requested_date == today:
+            session = _read_session()
+            by_name = {}
+            for movie in session["movieRankList"]:
+                name = movie["movieName"]
+                if name in by_name:
+                    logger.warning("猫眼今日排片有同名影片「%s」，采用排名靠前的影片", name)
+                else:
+                    by_name[name] = movie
+            if user_names and all(name in by_name for name in user_names):
+                results = [{
+                    "name": name,
+                    "show_count": by_name[name]["count"],
+                    "box_rate": "N/A",
+                    "movie_id": by_name[name].get("movieId", 0),
+                } for name in user_names]
+                logger.info("猫眼 %s：直接读取今日排片，总场次 %d", today, session["totalCount"])
+                return results, session["totalCount"]
+
+        from playwright.sync_api import sync_playwright
+
         with sync_playwright() as playwright:
             browser = _launch_browser(playwright)
             try:
-                today_page, today_data = _read_dashboard(browser, today)
-                session = _read_session()
-                known_digits = _learn_digits(today_data, session["movieRankList"])
+                today_page, today_data, session, known_digits = _read_calibrated_dashboard(browser, today)
                 templates = _render_digits(today_page, today_data, known_digits)
                 if requested_date == today:
                     page, data = today_page, today_data
@@ -48,7 +71,7 @@ class MaoyanClient:
                     else:
                         by_name[name] = movie
                 session_by_name = {
-                    m["movieName"]: m["count"] for m in session["movieRankList"]
+                    m["movieName"]: m["count"] for m in reversed(session["movieRankList"])
                 }
                 results = []
                 for name in user_names:
@@ -58,9 +81,10 @@ class MaoyanClient:
                         raise RuntimeError(
                             f"影片「{name}」不在猫眼 {requested_date} 大盘影片列表中"
                         )
-                    count = _decode_number(movie["showCount"], digit_map)
                     if requested_date == today and name in session_by_name:
                         count = session_by_name[name]
+                    else:
+                        count = _decode_number(movie["showCount"], digit_map)
                     results.append({
                         "name": name,
                         "show_count": count,
@@ -80,6 +104,26 @@ class MaoyanClient:
                 browser.close()
 
 
+def _read_calibrated_dashboard(browser, today: str):
+    last_error = None
+    for attempt in range(1, 4):
+        page, data = _read_dashboard(browser, today)
+        try:
+            session = _read_session()
+            mapping = _learn_digits(data, session["movieRankList"])
+            return page, data, session, mapping
+        except _DigitMappingError as exc:
+            page.close()
+            last_error = exc
+            logger.warning("猫眼数字映射校验失败（第 %d/3 次）: %s", attempt, exc)
+            if attempt < 3:
+                time.sleep(1)
+        except Exception:
+            page.close()
+            raise
+    raise _DigitMappingError(f"{last_error}；连续获取 3 次后仍失败，请稍后重试") from last_error
+
+
 def _read_session() -> dict:
     try:
         response = requests.get(_SESSION, timeout=20)
@@ -93,6 +137,11 @@ def _read_session() -> dict:
         data = json.loads(match.group(1))
         if not data["movieRankList"] or data["totalCount"] <= 0:
             raise ValueError("排片数据为空")
+        if any(
+            not isinstance(movie.get("count"), int) or movie["count"] < 0
+            for movie in data["movieRankList"]
+        ):
+            raise ValueError("影片场次不是有效的非负整数")
         return data
     except Exception as exc:
         raise RuntimeError(f"猫眼今日排片页读取失败: {exc}") from exc
@@ -185,7 +234,11 @@ def _learn_digits(data: dict, session_movies: list[dict]) -> dict[str, str]:
         agreement = votes[glyph][int(digit)]
         opposition = max(votes[glyph][:int(digit)] + votes[glyph][int(digit) + 1:])
         if agreement < 1 or agreement <= opposition:
-            raise RuntimeError("猫眼今日排片与大盘数字字体无法可靠对应")
+            raise _DigitMappingError(
+                "猫眼今日排片与大盘数字字体无法可靠对应"
+                f"（字形 U+{ord(glyph):04X}，候选数字 {digit}，"
+                f"支持票 {agreement}，冲突票 {opposition}）"
+            )
     return mapping
 
 
